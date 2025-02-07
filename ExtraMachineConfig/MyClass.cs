@@ -212,11 +212,19 @@ internal sealed class ModEntry : Mod {
             ItemQueryContext itemContext = new ItemQueryContext(machine.Location, who, Game1.random, "machine '" + machine.QualifiedItemId + "' > output rules - extra output items from with ExtraMachineConfig");
             foreach (var extraOutputData in extraOutputs)
             {
+
+                if (!GameStateQuery.CheckConditions(extraOutputData.Condition, context))
+                {
+                    continue;
+                }
                 addByproducts = false;
                 var item = MachineDataUtility.GetOutputItem(machine, extraOutputData, inputItem, who, false, out var _);
                 addByproducts = true;
 
-                chest.addItem(item);
+                if (item != null)
+                {
+                    chest.addItem(item);
+                }
                 // Game1.createItemDebris(item, machine.TileLocation * 64f, -1, machine.Location);
             }
         }

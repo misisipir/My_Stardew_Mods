@@ -32,7 +32,6 @@ public class AutomatePatcher
             {
                 foreach (var item in chest.Items)
                 {
-                    ModEntry.Mmonitor.Log(item.Name);
                     if (item is not null)
                     {
                         __result = ModEntry.Helper.Reflection.GetMethod(__instance, "GetTracked")
