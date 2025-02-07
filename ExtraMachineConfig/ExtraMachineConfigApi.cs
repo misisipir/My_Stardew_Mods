@@ -13,6 +13,7 @@ using StardewValley.GameData.BigCraftables;
 using StardewValley.TokenizableStrings;
 using HarmonyLib;
 using System.Collections.Generic;
+using Selph.StardewMods.ExtraMachineConfig;
 
 namespace ExtraMachineConfig;
 
@@ -67,5 +68,47 @@ public class ExtraMachineConfigApi : IExtraMachineConfigApi {
     }
     return extraRequirements;
   }
+    public IList<MachineItemOutput> GetExtraOutputs(MachineItemOutput outputData, MachineData? machineData = null)
+    {
+            IList<MachineItemOutput> extraOutputs = new List<MachineItemOutput>();
+        if (!ModEntry.addByproducts)
+        {
+            return extraOutputs;
+        }
 
+
+        string itemquery;
+
+
+        if(outputData?.CustomData is not null && outputData.CustomData.TryGetValue("selph.ExtraMachineConfig.ExtraOutputIds", out itemquery) && itemquery != null)
+        {
+            string[] items = itemquery.Split(',', ' ');
+
+            foreach (var extraOutputId in items)
+            {
+                if (ModEntry.extraOutputAssetHandler.data.TryGetValue(extraOutputId, out var extraOutputData) && (!extraOutputData.CustomData?.ContainsKey("selph.ExtraMachineConfig.ExtraOutputIds") ?? true))
+                {
+                    extraOutputs.Add(extraOutputData);
+                }
+            }
+        }
+
+
+        if (machineData?.CustomFields is not null &&
+                machineData.CustomFields.TryGetValue(ModEntry.ExtraOutputIdsKey, out var globalExtraOutputIds))
+        {
+            foreach (var extraOutputId in globalExtraOutputIds.Split(',', ' '))
+            {
+
+                if (ModEntry.extraOutputAssetHandler.data.TryGetValue(extraOutputId, out var extraOutputData) &&
+                    (!extraOutputData.CustomData?.ContainsKey(ModEntry.ExtraOutputIdsKey) ?? true))
+                {
+                    extraOutputs.Add(extraOutputData);
+                }
+            }
+        }
+
+
+        return extraOutputs;
+    }
 }

@@ -14,6 +14,10 @@ using StardewValley.GameData.BigCraftables;
 using StardewValley.TokenizableStrings;
 using HarmonyLib;
 using System.Collections.Generic;
+using StardewValley.Objects;
+using Selph.StardewMods.ExtraMachineConfig;
+using StardewValley.Delegates;
+using StardewValley.Internal;
 
 namespace ExtraMachineConfig; 
 
@@ -46,15 +50,31 @@ internal sealed class ModEntry : Mod {
   internal static string RequirementInvalidMsgKey_Legacy = "ExtraMachineConfig.RequirementInvalidMsg";
   internal static string InheritPreserveIdKey_Legacy = "ExtraMachineConfig.InheritPreserveId";
   internal static string CopyColorKey_Legacy = "ExtraMachineConfig.CopyColor";
+    internal static string HolderId = $"selph.ExtraMachineConfig.Holder";
+    internal static string HolderQualifiedId = $"(O){HolderId}";
+    internal static ExtraOutputAssetHandler extraOutputAssetHandler;
+    internal static string ExtraOutputIdsKey = "selph.ExtraMachineConfig.ExtraOutputIds";
 
-  public override void Entry(IModHelper helper) {
+
+
+    // This is a dirty, dirty hack to prevent an infinite loop where the machine byproducts get
+    // their own global machine byproducts attached, leading to cascading calls of
+    // GetOutputItems on top of GetOutputItems.
+    // (Gods why did I code it like this?)
+    public static bool addByproducts = true;
+
+    public override void Entry(IModHelper helper) {
     Helper = helper;
     Mmonitor = this.Monitor;
     ModApi = new ExtraMachineConfigApi();
-
     var harmony = new Harmony(this.ModManifest.UniqueID);
+    extraOutputAssetHandler = new ExtraOutputAssetHandler();
 
-    harmony.Patch(
+
+    extraOutputAssetHandler.RegisterEvents(Helper);
+
+
+        harmony.Patch(
         original: AccessTools.Method(
           typeof(StardewValley.MachineDataUtility),
           nameof(StardewValley.MachineDataUtility.GetOutputData),
@@ -62,7 +82,8 @@ internal sealed class ModEntry : Mod {
           typeof(Farmer), typeof(GameLocation) }),
         prefix: new HarmonyMethod(typeof(ModEntry), nameof(ModEntry.MachineDataUtility_GetOutputData_prefix)));
 
-    harmony.Patch(
+
+        harmony.Patch(
         original: AccessTools.Method(typeof(StardewValley.MachineDataUtility),
           nameof(StardewValley.MachineDataUtility.GetOutputItem)),
         postfix: new HarmonyMethod(typeof(ModEntry), nameof(ModEntry.MachineDataUtility_GetOutputItem_postfix)));
@@ -71,13 +92,38 @@ internal sealed class ModEntry : Mod {
         original: AccessTools.Method(typeof(Item),
           nameof(Item.GetContextTags)),
         postfix: new HarmonyMethod(typeof(ModEntry), nameof(ModEntry.Item_GetContextTags_postfix)));
+        harmony.Patch(
+            original: AccessTools.Method(typeof(Farmer),
+              nameof(Farmer.OnItemReceived)),
+            postfix: new HarmonyMethod(typeof(ModEntry), nameof(ModEntry.Farmer_OnItemReceived_postfix)));
+
+        harmony.Patch(
+     original: AccessTools.Method(typeof(Chest),
+     nameof(Chest.addItem)),
+     postfix: new HarmonyMethod(typeof(ModEntry), nameof(ModEntry.Chest_addItem_postfix)));
 
     SmokedItemHarmonyPatcher.ApplyPatches(harmony);
     AnimalDataPatcher.ApplyPatches(harmony);
     Helper.Events.GameLoop.DayStarted += AnimalDataPatcher.OnDayStartedJunimoHut;
-  }
 
-  public override object GetApi() {
+
+
+        try
+        {
+            if (Helper.ModRegistry.IsLoaded("Pathoschild.Automate"))
+            {
+                this.Monitor.Log("This mod patches Automate. If you notice issues with Automate, make sure it happens without this mod before reporting it to the Automate page.", LogLevel.Debug);
+                AutomatePatcher.ApplyPatches(harmony);
+            }
+        }
+        catch (Exception e)
+        {
+            Monitor.Log("Failed patching Automate. Detail: " + e.Message, LogLevel.Error);
+        }
+
+    }
+
+    public override object GetApi() {
     return ModApi;
   }
 
@@ -93,6 +139,7 @@ internal sealed class ModEntry : Mod {
     string invalidMessage = null;
     IInventory inventory = SObject.autoLoadFrom ?? who.Items;
     List<MachineItemOutput> newOutputs = new List<MachineItemOutput>();
+    
     foreach (MachineItemOutput output in outputs) {
       if (output.CustomData == null) {
         newOutputs.Add(output);
@@ -141,6 +188,7 @@ internal sealed class ModEntry : Mod {
     if (__result == null || outputData == null || inputItem == null) {
       return;
     }
+ 
     IInventory inventory = SObject.autoLoadFrom ?? who.Items;
     // Inherit preserve ID
     if ((outputData.PreserveId == "INHERIT" ||
@@ -152,10 +200,34 @@ internal sealed class ModEntry : Mod {
         __result is SObject resultObject) {
       resultObject.preservedParentSheetIndex.Value = inputObject.preservedParentSheetIndex.Value;
     }
-    if (outputData.CustomData == null) {
-      return;
-    }
-    // Remove extra fuel
+
+
+
+        var extraOutputs = ModApi.GetExtraOutputs(outputData, machine.GetMachineData());
+        if (extraOutputs.Count > 0 && __result != null)
+        {
+            Chest chest = new Chest(false);
+            (__result as SObject).heldObject.Value = chest;
+            GameStateQueryContext context = new GameStateQueryContext(machine.Location, who, (__result as SObject), inputItem, Game1.random);
+            ItemQueryContext itemContext = new ItemQueryContext(machine.Location, who, Game1.random, "machine '" + machine.QualifiedItemId + "' > output rules - extra output items from with ExtraMachineConfig");
+            foreach (var extraOutputData in extraOutputs)
+            {
+                addByproducts = false;
+                var item = MachineDataUtility.GetOutputItem(machine, extraOutputData, inputItem, who, false, out var _);
+                addByproducts = true;
+
+                chest.addItem(item);
+                // Game1.createItemDebris(item, machine.TileLocation * 64f, -1, machine.Location);
+            }
+        }
+
+
+        if (outputData.CustomData == null)
+        {
+            return;
+        }
+
+        // Remove extra fuel
     var extraRequirements = ModApi.GetExtraRequirements(outputData);
     foreach (var entry in extraRequirements) {
       Utils.RemoveItemFromInventoryById(inventory, entry.Item1, entry.Item2);
@@ -180,17 +252,61 @@ internal sealed class ModEntry : Mod {
         Helper.Reflection.GetMethod(newColoredObject, "GetOneCopyFrom").Invoke(__result);
         newColoredObject.Stack = __result.Stack;
       }
-      var color = TailoringMenu.GetDyeColor(inputItem);
+       var color = TailoringMenu.GetDyeColor(inputItem);
       if (color != null) {
         newColoredObject.color.Value = (Color)color;
         __result = newColoredObject;
       }
     }
-  }
 
-  private static void Item_GetContextTags_postfix(Item __instance, ref HashSet<string> __result) {
+
+
+       
+
+
+    }
+
+    private static void Item_GetContextTags_postfix(Item __instance, ref HashSet<string> __result) {
     if (__instance.modData.TryGetValue(ExtraContextTagsKey, out string contextTags)) {
       __result.UnionWith(contextTags.Split(","));
     }
   }
+
+
+    public static void Chest_addItem_postfix(Chest __instance, Item __result, Item item)
+    {
+        if (item.QualifiedItemId == HolderQualifiedId)
+        {
+            __instance.Items.Remove(item);
+        }
+        if (__result != null || item is not SObject { heldObject.Value: Chest chest } obj) return;
+        foreach (var extraItem in chest.Items)
+        {
+            Mmonitor.Log("item info : " + extraItem.Name);
+            var leftoverItem = __instance.addItem(extraItem);
+            if (leftoverItem != null)
+            {
+                Game1.createItemDebris(leftoverItem, __instance.TileLocation * 64f, -1, __instance.Location);
+            }
+        }
+        obj.heldObject.Value = null;
+    }
+
+
+    private static void Farmer_OnItemReceived_postfix(Farmer __instance, Item item, int countAdded, Item mergedIntoStack, bool hideHudNotification = false)
+    {
+        Mmonitor.Log("FARMOER"+item.QualifiedItemId);
+        if (item.QualifiedItemId == HolderQualifiedId)
+        {
+            __instance.removeItemFromInventory(item);
+        }
+        if (item is SObject obj && obj.heldObject.Value is Chest chest)
+        {
+            __instance.addItemsByMenuIfNecessary(new List<Item>(chest.Items));
+            obj.heldObject.Value = null;
+        }
+    }
+
+
+
 }
